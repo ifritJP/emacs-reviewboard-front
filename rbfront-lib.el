@@ -70,21 +70,36 @@ alist は (名前 値) のリスト。
       )
     ))
 
-(defun rb/front-exec-rbt (id basedir file-list)
+(defun rb/front-exec-rbt-sentinel (process event callback)
+  (let ((status (process-status process)))
+    (when (or (eq status 'exit)
+	      (eq status 'signal))
+      (funcall callback (eq (process-exit-status process) 0)))))
+
+(defun rb/front-exec-rbt (id basedir file-list &optional callback)
   "id の review request に file-list の diff を登録する。
 
 basedir は、 rbt を実行するディレクトリパス。
 file-list は、 basedir からの相対パスのリスト。
+callback は、 rbt 終了時に実行するコールバック。
+コールバックの引数には rbt が成功したかどうかを渡す。
 "
   (with-current-buffer (get-buffer-create rb/front-rbt-buf)
     (erase-buffer)
     (setq default-directory (expand-file-name basedir))
-    (apply 'start-process rb/front-rbt-buf rb/front-rbt-buf
-	   rb/front-rbt "post" "--repository" rb/front-rb-repository
-	   "--server" rb/front-rb-url "--api-token" rb/front-token
-	   "-r" (format "%s" id)
-	   (apply 'append (mapcar (lambda (X) (list "-I" X)) file-list)))
-    (switch-to-buffer-other-window rb/front-rbt-buf)
+    (let (process)
+      (setq process
+	    (apply 'start-process rb/front-rbt-buf rb/front-rbt-buf
+		   rb/front-rbt "post" "--repository" rb/front-rb-repository
+		   "--server" rb/front-rb-url "--api-token" rb/front-rb-api-token
+		   "-r" (format "%s" id)
+		   (apply 'append (mapcar (lambda (X) (list "-I" X)) file-list))))
+      (if (processp process)
+	  (set-process-sentinel process
+				(lambda (proc event)
+				  (rb/front-exec-rbt-sentinel proc event callback)))
+	(callback nil))
+      (switch-to-buffer-other-window rb/front-rbt-buf))
   ))
 
 (defun rb/front-access (obj &rest key-list)
@@ -241,8 +256,10 @@ summary 等が draft 情報にしか入っていないので、draft から情�
       (setq id (rb/front-access new-resp :review_request :id))
       (rb/front-edit-review id t title description testing_done)
       )
-    (rb/front-exec-rbt id basedir file-list)
-    (rb/front-draft-publish id)
+    (rb/front-exec-rbt id basedir file-list
+		       (lambda (success)
+			 (when success
+			   (rb/front-draft-publish id))))
     ))
 
 
@@ -299,7 +316,7 @@ summary 等が draft 情報にしか入っていないので、draft から情�
 		(plist-get X :source_file))
 	      (rb/front-access-web url nil nil :files)
 	      ))
-  )))
+  ))
 
 
 
