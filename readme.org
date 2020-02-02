@@ -1,0 +1,38 @@
+# -*- coding:utf-8 -*-
+#+AUTHOR: ifritJP
+#+STARTUP: nofold
+
+#+TITLE: Review Board front-end for emacs
+
+* system require
+
+- curl
+- rbt (RBTools)
+- psvn.el  
+
+* setup
+
+#+BEGIN_SRC el
+(require 'rbfront-mode)
+(setq rb/front-rb-api-token "TOKEN")
+(setq rb/front-rb-url "http://reviewboard.host/path")
+(setq rb/front-rbt "rbt")
+(setq rb/front-proxy "http://proxy.host:8080/")
+(setq rb/front-rb-repository "RESPOSITORY_NAME")
+#+END_SRC
+
+* usage
+
+** request new review
+
+- M-x svn-status
+- mark files (hit 'm' on file)
+- hit 'j'  
+  - display the draft of new review request 
+  - edit the draft
+  - hit 'C-c C-c'
+
+** listing review requests  
+  
+- M-x rb/front-list-view
+  

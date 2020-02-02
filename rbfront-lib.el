@@ -26,7 +26,7 @@
 (defvar rb/front-rb-api-token "")
 (defvar rb/front-rb-url "http://localhost/rb")
 (defvar rb/front-rbt "rbt")
-(defvar rb/front-proxy "http://localhost:8080/")
+(defvar rb/front-proxy "")
 (defvar rb/front-rb-repository "")
 
 (defvar rb/front-access-buf "*rb/front/access*")
