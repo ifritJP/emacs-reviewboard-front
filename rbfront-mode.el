@@ -25,52 +25,94 @@
 
 (require 'rbfront-lib)
 
+(defvar rb/front-submit-and-publish-p t
+  "nil 以外の場合、submit と同時に publish する。")
+
 (defvar rb/front-edit-info-default
   '(:title "new title"
-    :description "input description"
-    :test "input test")
+	   :description "input description"
+	   :test "input test")
   "新規 review request のデフォルト情報")
 
 (defvar rb/front-list-buf "*rb/front/list*")
 (defvar rb/front-edit-buf "*rb/front/edit*")
+(defvar rb/front-commit-buf "*rb/front/commit*")
+
 (defvar rb/front-prev-basedir nil)
 
-(defun rb/front-insert-readOnlyText (text face &optional annex)
+(defvar rb/front-face-message 'font-lock-doc-face)
+(defvar rb/front-face-item 'font-lock-comment-face)
+(defvar rb/front-face-emphasis 'font-lock-builtin-face)
+(defvar rb/front-face-warning 'font-lock-warning-face)
+
+
+(defun rb/front-insert-readOnlyText-multi (text-face-list)
+  "編集禁止文字列を挿入する。
+
+text-face-list は \(text face\) を要素にもつリスト。"
   (let ((start (point)) (inhibit-read-only t))
-    (if face
-	(insert (propertize text 'face face))
-      (insert text))
+    (dolist (text-face text-face-list)
+      (let ((text (nth 0 text-face))
+	    (face (nth 1 text-face)))
+	(if face
+	    (insert (propertize text 'face face))
+	  (insert text))
+	)
+      (put-text-property (if (< 1 start)
+			     (1- start)
+			   start)
+			 (1- (point)) 'read-only t))))
+
+
+(defun rb/front-insert-readOnlyText (text face &optional annex)
+  "禁止文字列 text を face で修飾して挿入する。
+
+annex は、text に付加する禁止文字列。 face はデフォルト。"
+  (let ((alist (list (list text face))))
     (when annex
-	(insert annex))
-    (put-text-property (if (< 1 start)
-			   (1- start)
-			 start)
-		       (1- (point)) 'read-only t)))
+      (add-to-list 'alist (list annex nil) t))
+    (rb/front-insert-readOnlyText-multi alist)))
+
+(defun rb/front-insert-key-bind-doc (bind-message-list)
+  "key-bind を説明する文字列を挿入する。
+
+bind-message-list は、 \(message bind\) を要素にもつリスト。
+"
+  (let (alist)
+    (setq alist (delq nil (apply 'append
+				 (mapcar (lambda (X)
+					   (list (list (car X) rb/front-face-message)
+						 (when (cadr X)
+						   (list (cadr X) rb/front-face-item))))
+					 bind-message-list))))
+    (rb/front-insert-readOnlyText-multi alist)
+    ))
 
 (defun rb/front-list-get-rrq-txt (rrq)
+  "review request を示す文字列を返す。"
   (if rrq
-      (format "%6d: %s: %s: %s"
-	      (plist-get rrq :id)
-	      (propertize
-	       (if (rb/front-public-p rrq)
-		   "pub"
-		 "pri")
-	       'face
-	       (if (rb/front-public-p rrq)
-		   font-lock-keyword-face
-		 font-lock-warning-face)
-	       )
-	      (propertize
-	       (plist-get rrq :last_updated)
-	       'face font-lock-comment-face)
-	      (plist-get rrq :summary))
+      (let* ((id (plist-get rrq :id))
+	     (draft (if (rb/front-has-draft id)
+			(propertize "draft " 'face rb/front-face-warning)
+		      (propertize "public" 'face rb/front-face-emphasis))))
+	(format "%6d: %s: %s: %s"
+		id
+		draft
+		(propertize
+		 (plist-get rrq :last_updated)
+		 'face rb/front-face-item)
+		(plist-get rrq :summary)))
     ""
     ))
 
 (defvar rb/front-list-rrq-list nil)
 
 (defun rb/front-list-update-rrq-list ()
-  (setq rb/front-list-rrq-list (rb/front-get-my-reported-rrq-list)))
+  (setq rb/front-list-rrq-list
+	(sort (rb/front-get-my-reported-rrq-list)
+	      (lambda (val1 val2)
+		(> (plist-get val1 :id)
+		   (plist-get val2 :id))))))
 
 (defun rb/front-list-redraw-view ()
   (interactive)
@@ -82,21 +124,27 @@
       (setq buffer-read-only nil)
       (erase-buffer)
 
-      (rb/front-insert-readOnlyText
-       "reload: (g), edit: (RET), upload-file: (u), publish: (p), close: (c), discard: (d)\n"
-       'font-lock-doc-face)
+      (rb/front-insert-key-bind-doc
+       '(("reload: " "(g)" )
+	 (", edit: " "(RET)")
+	 ("\nupload-diff: " "(u)" )
+	 (", publish: " "(p)" )
+	 ( ", close: " "(c)" )
+	 (", discard: " "(d)" )
+	 ("\ncommit: " "(C)" )
+	 ("\n----\n" ) ) )
+      (rb/front-insert-readOnlyText-multi
+       (list (list "last-update: " rb/front-face-item)
+	     (list (format-time-string "%T\n") rb/front-face-emphasis)
+	     (list "----\n" rb/front-face-message)
+	     ))
+      
       (dolist (rrq rb/front-list-rrq-list)
 	(insert (rb/front-list-get-rrq-txt rrq))
 	(insert "\n")
 	)
 
       (setq buffer-read-only t)
-      (local-set-key (kbd "c") 'rb/front-list-close-current)
-      (local-set-key (kbd "d") 'rb/front-list-discard-current)
-      (local-set-key (kbd "p") 'rb/front-list-publish-current)
-      (local-set-key (kbd "u") 'rb/front-list-upload-current)
-      (local-set-key (kbd "g") 'rb/front-list-redraw-view)
-      (local-set-key (kbd "RET") 'rb/front-list-edit-current)
       )
     ))
 
@@ -110,82 +158,131 @@ buf が既にいずれかの window に表示されている場合は、その w
     (select-window (get-buffer-window buf))
     ))
 
+(defvar rb/front-list-mode-hook nil
+  "Hooks called when rb/front-list mode fires up.")
+
+(define-derived-mode rb/front-list-mode
+  text-mode "rb/front-list"
+  "Major mode for Review Board.
+          \\{rb/front-list-mode-map}"
+  (rb/front-list-redraw-view)
+  
+  (rb/front-switch-to-buffer-other-window (get-buffer-create rb/front-list-buf))  
+  )
+
+(define-key rb/front-list-mode-map (kbd "C") 'rb/front-list-commit-current)
+(define-key rb/front-list-mode-map (kbd "c") 'rb/front-list-close-current)
+(define-key rb/front-list-mode-map (kbd "d") 'rb/front-list-discard-current)
+(define-key rb/front-list-mode-map (kbd "p") 'rb/front-list-publish-current)
+(define-key rb/front-list-mode-map (kbd "u") 'rb/front-list-upload-current)
+(define-key rb/front-list-mode-map (kbd "g") 'rb/front-list-redraw-view)
+(define-key rb/front-list-mode-map (kbd "RET") 'rb/front-list-edit-current)
+
+
+
 
 (defun rb/front-list ()
   (interactive)
-  (rb/front-list-redraw-view)
-  (rb/front-switch-to-buffer-other-window (get-buffer-create rb/front-list-buf))
-)
+  (with-current-buffer (get-buffer-create rb/front-list-buf)
+    (rb/front-list-mode))
+  )
 
 (defun rb/front-list-current-rrq ()
-  (nth (- (line-number-at-pos) 2) rb/front-list-rrq-list)
-  )
+  (let ((index (- (line-number-at-pos) 7)))
+    (if (and (>= index 0)
+	     (< index (length rb/front-list-rrq-list)))
+	(nth index rb/front-list-rrq-list)
+      nil
+    )
+    ))
+
+(defun rb/front-list-current-do (callback)
+  (let ((rrq (rb/front-list-current-rrq)))
+    (when rrq
+      (funcall callback rrq))))
+
+
+(defun rb/front-list-commit-current ()
+  (interactive)
+  (rb/front-list-current-do
+   (lambda (rrq)
+     (rb/front-commit-view (plist-get rrq :id))
+    )))
 
 (defun rb/front-list-edit-current ()
   (interactive)
-  (let ((rrq (rb/front-list-current-rrq)))
-    (rb/front-edit-view (plist-get rrq :id))
-    ))
+  (rb/front-list-current-do
+   (lambda (rrq)
+     (rb/front-edit-view (plist-get rrq :id))
+    )))
 (defun rb/front-list-upload-current ()
   (interactive)
-  (let ((rrq (rb/front-list-current-rrq)))
-    (rb/front-edit-update-diff-for (rb/front-edit-convert-rrq-to-info rrq))
-    ))
+  (rb/front-list-current-do
+   (lambda (rrq)
+     (rb/front-edit-update-diff-for (rb/front-edit-convert-rrq-to-info rrq) t)
+    )))
 (defun rb/front-list-publish-current ()
   (interactive)
-  (when (y-or-n-p "publish?: ")
-    (let ((rrq (rb/front-list-current-rrq)))
-      (rb/front-draft-publish (rb/front-access rrq :id))
-      ))
+  (rb/front-list-current-do
+   (lambda (rrq)
+     (when (y-or-n-p "publish?: ")
+       (rb/front-draft-publish (rb/front-access rrq :id))
+       (rb/front-list-redraw-view)
+       )))
   )
 (defun rb/front-list-close-current ()
   (interactive)
-  (when (y-or-n-p "close?: ")
-    (let ((rrq (rb/front-list-current-rrq)))
-      (rb/front-close-rrq rrq)
-      (sleep-for 1)
-      (rb/front-list-redraw-view)
-      ))
+  (rb/front-list-current-do
+   (lambda (rrq)
+     (when (y-or-n-p "close?: ")
+       (rb/front-close-rrq rrq)
+       (sleep-for 1)
+       (rb/front-list-redraw-view)
+       )))
   )
 (defun rb/front-list-discard-current ()
   (interactive)
-  (when (y-or-n-p "discard?: ")
-    (let ((rrq (rb/front-list-current-rrq)))
-      (rb/front-discard-rrq (rb/front-access rrq :id))
-      (sleep-for 1)
-      (rb/front-list-redraw-view)
-      ))
+  (rb/front-list-current-do
+   (lambda (rrq)
+     (when (y-or-n-p "discard?: ")
+       (rb/front-discard-rrq (rb/front-access rrq :id))
+       (sleep-for 1)
+       (rb/front-list-redraw-view)
+       )))
   )
 
 (defun rb/front-file-info-normalize (file-info)
-    "file-info を正規化する。
+  "file-info を正規化する。
 
-- file-list を reviewboard に登録するパス形式に変換。
-- top-dir を work ディレクトリのルートに変換。
+file-info は次の値を持つ。
+
+\(:tool TOOL
+  :top-dir TOP-DIR
+  :base-dir BASE-DIR
+  :file-list FILE-LIST\)
+
+FILE-LIST は、ローカルの BASE-DIR からの相対パスになっているので、
+reviewboard に登録されるパスに変換する。
+TOP-DIR に、ローカルのワークディレクトリのトップディレクトリを設定する。
  "
   (let* ((tool (rb/front-file-info-get-tool file-info))
 	 (base-dir (rb/front-file-info-get-base-dir file-info))
 	 (file-list (rb/front-file-info-get-file-list file-info))
 	 rb-path-list conv-info work-root)
-      (cond ((equal tool "Subversion")
-	     (setq conv-info (rb/front-svn-info base-dir))
-	     )
-	    (t
-	     (error (concat "not support -- " tool)))
-	    )
-      (setq work-root (plist-get conv-info :root-path))
-      (setq rb-path-list
-	    (mapcar (lambda (X)
-		      (rb/front-path-join
-		       (plist-get conv-info :root-url)
-		       (file-relative-name (expand-file-name X base-dir)
-					   work-root)
-		       ))
-		    file-list))
-      (plist-put file-info :file-list rb-path-list)
-      (plist-put file-info :top-dir work-root)
-      file-info
-      ))
+    (setq conv-info (rb/front-tool-get-work-info tool base-dir))
+    (setq work-root (plist-get conv-info :root-path))
+    (setq rb-path-list
+	  (mapcar (lambda (X)
+		    (rb/front-path-join
+		     (plist-get conv-info :root-url-relative)
+		     (file-relative-name (expand-file-name X base-dir)
+					 work-root)
+		     ))
+		  file-list))
+    (plist-put file-info :file-list rb-path-list)
+    (plist-put file-info :top-dir work-root)
+    file-info
+    ))
 
 
 (defun rb/front-file-info-create (tool base-dir file-list)
@@ -210,12 +307,12 @@ buf が既にいずれかの window に表示されている場合は、その w
 	       " [X]: "
 	     " [ ]: ")
 	   path)
-   'font-lock-warning-face "\n")
+   rb/front-face-warning "\n")
   )
 
 
 (defvar rb/front-edit-during-to-add-file nil)
-    
+
 (defun rb/front-edit-add-file (file-info)
   (if (not rb/front-edit-during-to-add-file)
       ;; rb/front-edit-during-to-add-file が nil の場合、新規投稿
@@ -232,7 +329,7 @@ buf が既にいずれかの window に表示されている場合は、その w
 		   (rb/front-file-info-get-base-dir file-info))
 	(rb/front-edit-redraw info)
 	(when (not (eq (plist-get info :state) "new"))
-	  (rb/front-edit-update-diff-for info))
+	  (rb/front-edit-update-diff-for info rb/front-submit-and-publish-p))
 	))
     (switch-to-buffer (get-buffer-create rb/front-edit-buf))
     ))
@@ -243,80 +340,112 @@ buf が既にいずれかの window に表示されている場合は、その w
 	  (id (plist-get info :id))
 	  (modified-p (buffer-modified-p)))
       (erase-buffer)
-      (rb/front-insert-readOnlyText
-       (concat "submit: (C-c C-c), "
-	       "update diff: (C-c C-u), "
-	       ;;"publish: (C-c C-p), "
-	       "cancel: (kill-buffer)\n")
-       'font-lock-doc-face)
+      (rb/front-insert-key-bind-doc
+       '(("submit: " "(C-c C-c)" )
+	 (", update diff: " "(C-c C-u)" )
+	 (", publish: " "(C-c C-p)")
+	 ("\nsave to draft: " "(C-x C-s)" )
+	 (", toggle publish mode: " "(C-c C-t)" )
+	 (", cancel: " "(kill-buffer)")
+	 ("\n------\n" )))
+      (rb/front-insert-readOnlyText-multi
+       `(("submit-mode: " ,rb/front-face-item)
+	 (,(if rb/front-submit-and-publish-p
+	       "submit and publish"
+	     "only submit")
+	  ,rb/front-face-warning)
+	 ("\n" nil)))
       (rb/front-insert-readOnlyText (format "tool: %s\n" (plist-get info :tool))
-				    'font-lock-doc-face)
+				    rb/front-face-item)
       (rb/front-insert-readOnlyText (format "top-dir: %s\n"
 					    (or (plist-get info :top-dir)
 						""))
-				    'font-lock-doc-face)
+				    rb/front-face-item)
       (rb/front-insert-readOnlyText (format "base-dir: %s\n"
 					    (or (plist-get info :base-dir)
 						""))
-				    'font-lock-doc-face)
+				    rb/front-face-item)
       (rb/front-insert-readOnlyText (format "id: %s\n" (or id "--"))
-				    'font-lock-doc-face)
-      (rb/front-insert-readOnlyText (format "state: %s\n"
-					    (plist-get info :state))
-				    'font-lock-doc-face)
+				    rb/front-face-item)
+      (rb/front-insert-readOnlyText-multi
+       `(("state: " ,rb/front-face-item)
+	 (,(plist-get info :state) ,rb/front-face-warning)
+	 ("\n" nil)))
       (rb/front-insert-readOnlyText "title (only 1 line):"
-				    'font-lock-warning-face " ")
+				    rb/front-face-emphasis " ")
       (insert (or (plist-get info :title)
 		  (plist-get rb/front-edit-info-default :title)))
       (insert "\n")
       (rb/front-insert-readOnlyText "description: --->"
-				    'font-lock-warning-face "\n")
+				    rb/front-face-emphasis "\n")
       (insert (or (plist-get info :description)
 		  (plist-get rb/front-edit-info-default :description)))
       (insert "\n")
       (rb/front-insert-readOnlyText "<---\n"
-				    'font-lock-warning-face)
+				    rb/front-face-emphasis)
       (rb/front-insert-readOnlyText "test: --->"
-				    'font-lock-warning-face "\n")
+				    rb/front-face-emphasis "\n")
       (insert (or (plist-get info :test)
 		  (plist-get rb/front-edit-info-default :test)))
       (insert "\n")
       (rb/front-insert-readOnlyText "<---\n"
-				    'font-lock-warning-face)
+				    rb/front-face-emphasis)
       (rb/front-insert-readOnlyText "files: --->"
-				    'font-lock-warning-face "\n")
-      (rb/front-insert-readOnlyText "toggle mark: (C-c C-SPC), add file: (C-c C-a)"
-				    'font-lock-doc-face "\n")
-      
+				    rb/front-face-emphasis "\n")
+
+      (rb/front-insert-key-bind-doc
+       '(("toggle mark: " "(C-c C-SPC)")
+	 (", add file: " "(C-c C-a)")
+	 ("\n")))
       (dolist (file (plist-get info :file-list))
 	(rb/front-edit-insert-file-info file t))
       (rb/front-insert-readOnlyText "<---\n"
-				    'font-lock-warning-face)
+				    rb/front-face-emphasis)
 
 
       (when id
 	(rb/front-insert-readOnlyText "review comments: --->"
-				      'font-lock-warning-face "\n")
+				      rb/front-face-emphasis "\n")
 	(dolist (review (rb/front-get-review-list id))
 	  (rb/front-insert-readOnlyText
 	   (format "%s:%s\n"
 		   (rb/front-repstr 
 		    (rb/front-access review :links :filediff :title)
-		    " ([0-9]+).*" "" t)
+		    " ([^()]+) ->.*" "" t)
 		   (plist-get review :first_line))
-	   'font-lock-comment-face)
+	   rb/front-face-item)
 	  (rb/front-insert-readOnlyText (plist-get review :text)
-					'font-lock-keyword-face "\n")
+					rb/front-face-warning "\n")
 	  
 	  )
 	(rb/front-insert-readOnlyText "<---"
-				      'font-lock-warning-face "\n")
+				      rb/front-face-emphasis "\n")
 	)
       
       (set-buffer-modified-p modified-p)
       )
     ))
 
+
+(defvar rb/front-edit-mode-hook nil
+  "Hooks called when rb/front-edit mode fires up.")
+
+(define-derived-mode rb/front-edit-mode
+  text-mode "rb/front-edit"
+  "Major mode for Review Board.
+          \\{rb/front-edit-mode-map}"
+  )
+
+(define-key rb/front-edit-mode-map (kbd "C-c C-a") 'rb/front-edit-add-file-to)
+(define-key rb/front-edit-mode-map (kbd "C-c C-SPC") 'rb/front-edit-toggle-marking-file)
+(define-key rb/front-edit-mode-map (kbd "C-c C-c") 'rb/front-edit-submit)
+(define-key rb/front-edit-mode-map (kbd "C-c C-p") 'rb/front-edit-publish)
+(define-key rb/front-edit-mode-map (kbd "C-c C-t") 'rb/front-edit-toggle-publish-mode)
+(define-key rb/front-edit-mode-map (kbd "C-c C-u") 'rb/front-edit-update-diff)
+(define-key rb/front-edit-mode-map (kbd "C-x C-s") 'rb/front-edit-save-to-draft)
+
+(defun rb/front-edit-get-info-at (id)
+  (rb/front-edit-convert-rrq-to-info (rb/front-get-request id)))
 
 (defun rb/front-edit-view (id &optional file-info)
   "指定 id の review request を編集する。
@@ -327,6 +456,7 @@ file-info は rb/front-file-info-create で生成する。
   (let* ((buf (get-buffer-create rb/front-edit-buf))
 	 info tool base-dir file-list rrq)
     (with-current-buffer buf
+      (rb/front-edit-mode)
       (if id
 	  (progn
 	    (setq rrq (rb/front-get-request id))
@@ -344,7 +474,7 @@ file-info は rb/front-file-info-create で生成する。
 	)
       (when base-dir
 	(setq default-directory (expand-file-name base-dir)))
-
+      
       (rb/front-edit-redraw info)
       )
     (switch-to-buffer buf)
@@ -358,14 +488,19 @@ file-info は rb/front-file-info-create で生成する。
 	(set-buffer-modified-p nil)
       ;; id を指定していない場合、新規 rrq 投稿なので、変更ありで初期化
       (set-buffer-modified-p t))
-
-    (local-set-key (kbd "C-c C-a") 'rb/front-edit-add-file-to)
-    (local-set-key (kbd "C-c C-SPC") 'rb/front-edit-toggle-marking-file)
-    (local-set-key (kbd "C-c C-c") 'rb/front-edit-submit)
-    (local-set-key (kbd "C-c C-u") 'rb/front-edit-update-diff)
     )
   )
 
+(defun rb/front-get-work-dir (id)
+  (let (dir default-dir)
+    (when id
+      (setq default-dir (plist-get (rb/front-setting-get-work-info id) :base-dir)))
+    (when (not default-dir)
+      (setq default-dir rb/front-prev-basedir))
+    (setq dir (read-file-name "work-dir?: " "/" default-dir t default-dir))
+    (setq rb/front-prev-basedir (expand-file-name dir))
+    rb/front-prev-basedir
+  ))
 
 
 (defun rb/front-edit-add-file-to ()
@@ -373,17 +508,11 @@ file-info は rb/front-file-info-create で生成する。
   (rb/front-edit-check-submit)
   (let* ((info (rb/front-edit-get-info))
 	 (tool (plist-get info :tool))
-	 (work-dir (expand-file-name
-		    (read-file-name "work-dir?: " "/"
-				    rb/front-prev-basedir t rb/front-prev-basedir)))
+	 (work-dir (rb/front-get-work-dir (plist-get info :id)))
 	 )
     (setq rb/front-prev-basedir work-dir)
     (setq rb/front-edit-during-to-add-file t)
-    (cond ((equal tool "Subversion")
-	   (when (get-buffer svn-status-buffer-name)
-	     (rb/front-switch-to-buffer-other-window
-	      (get-buffer svn-status-buffer-name)))
-	   (svn-status work-dir)))
+    (rb/front-tool-get-setup-to-add-files tool work-dir)
     ))
 
 
@@ -399,15 +528,16 @@ file-info は rb/front-file-info-create で生成する。
   )
 
 (defun rb/front-edit-convert-rrq-to-info (rrq)
-  (list :tool (rb/front-get-repository-tool-at-request rrq)
-	:top-dir ""
-	:base-dir ""
-	:id (plist-get rrq :id)
-	:state (if (rb/front-private-p rrq) "private" "public")
-	:title (plist-get rrq :summary)
-	:description (plist-get rrq :description)
-	:test (plist-get rrq :testing_done)
-	:file-list (rb/front-get-file-list rrq))
+  (let ((work-info (rb/front-setting-get-work-info (plist-get rrq :id))))
+    (list :tool (rb/front-get-repository-tool-at-request rrq)
+	  :top-dir (or (plist-get work-info :top-dir) "")
+	  :base-dir (or (plist-get work-info :base-dir) "")
+	  :id (plist-get rrq :id)
+	  :state (if (rb/front-private-p rrq) "private" "public")
+	  :title (plist-get rrq :summary)
+	  :description (plist-get rrq :description)
+	  :test (plist-get rrq :testing_done)
+	  :file-list (rb/front-get-file-list rrq)))
   )
 
 (defun rb/front-edit-get-text-line (pattern)
@@ -418,42 +548,42 @@ file-info は rb/front-file-info-create で生成する。
 (defun rb/front-edit-get-info ()
   (let (tool top-dir base-dir id state title description test
 	     file-list modified-file-list-p)
-  (save-excursion
-    (beginning-of-buffer)
-    (setq tool (rb/front-edit-get-text-line "tool: "))
-    (setq top-dir (rb/front-edit-get-text-line "top-dir: "))
-    (setq base-dir (rb/front-edit-get-text-line "base-dir: "))
-    (setq id (string-to-number (rb/front-edit-get-text-line "id: ")))
-    (when (eq id 0)
-      (setq id nil))
-    (re-search-forward "state: ")
-    (setq state (buffer-substring-no-properties (point) (point-at-eol)))
-    (re-search-forward "title.*: ")
-    (setq title (buffer-substring-no-properties (point) (point-at-eol)))
-    
-    (forward-line 1)
-    (setq description (rb/front-edit-get-text-region "description:"))
+    (save-excursion
+      (beginning-of-buffer)
+      (setq tool (rb/front-edit-get-text-line "tool: "))
+      (setq top-dir (rb/front-edit-get-text-line "top-dir: "))
+      (setq base-dir (rb/front-edit-get-text-line "base-dir: "))
+      (setq id (string-to-number (rb/front-edit-get-text-line "id: ")))
+      (when (eq id 0)
+	(setq id nil))
+      (re-search-forward "state: ")
+      (setq state (buffer-substring-no-properties (point) (point-at-eol)))
+      (re-search-forward "title.*: ")
+      (setq title (buffer-substring-no-properties (point) (point-at-eol)))
+      
+      (forward-line 1)
+      (setq description (rb/front-edit-get-text-region "description:"))
 
-    (forward-line 1)
-    (setq test (rb/front-edit-get-text-region "test:"))
-    
-    (forward-line 1)
-    (re-search-forward "files: --->")
-    (forward-line 2)
-    (beginning-of-line)
-    (while (looking-at "^ \\[\\([ X]\\)\\]: \\(.*\\)$")
-      (let ((mark (match-string 1))
-	    (path (match-string 2)))
-	(if (equal mark "X")
-	    (add-to-list 'file-list path t)
-	  (setq modified-file-list-p t))
-	(forward-line 1)
-      ))
-    )
-  (list :tool tool :top-dir top-dir :base-dir base-dir
-	:id id :state state :title title :description description :test test
-	:file-list file-list :modified-file-list-p modified-file-list-p)
-  ))
+      (forward-line 1)
+      (setq test (rb/front-edit-get-text-region "test:"))
+      
+      (forward-line 1)
+      (re-search-forward "files: --->")
+      (forward-line 2)
+      (beginning-of-line)
+      (while (looking-at "^ \\[\\([ X]\\)\\]: \\(.*\\)$")
+	(let ((mark (match-string 1))
+	      (path (match-string 2)))
+	  (if (equal mark "X")
+	      (add-to-list 'file-list path t)
+	    (setq modified-file-list-p t))
+	  (forward-line 1)
+	  ))
+      )
+    (list :tool tool :top-dir top-dir :base-dir base-dir
+	  :id id :state state :title title :description description :test test
+	  :file-list file-list :modified-file-list-p modified-file-list-p)
+    ))
 
 (defun rb/front-edit-toggle-marking-file ()
   (interactive)
@@ -473,64 +603,88 @@ file-info は rb/front-file-info-create で生成する。
     (goto-char pos)
     ))
 
-(defun rb/front-edit-submit ()
+(defun rb/front-edit-toggle-publish-mode ()
+  (interactive)
+  (setq rb/front-submit-and-publish-p (not rb/front-submit-and-publish-p))
+  (rb/front-edit-redraw (rb/front-edit-get-info)))
+
+(defun rb/front-edit-publish ()
+  (interactive)
+  (let ((rb/front-submit-and-publish-p t))
+    ;; submit の publish が動くように modified-p しておく
+    (set-buffer-modified-p t)
+    (rb/front-edit-submit)
+    ))
+
+(defun rb/front-edit-save-to-draft ()
+  (interactive)
+  ;; publish せずに submit する。
+  (let ((rb/front-submit-and-publish-p nil))
+    (rb/front-edit-submit t)))
+
+(defun rb/front-edit-submit (&optional no-interactive)
   (interactive)
   (let* ((info (rb/front-edit-get-info))
 	 (id (plist-get info :id)))
     (when (and id (plist-get info :modified-file-list-p))
       ;; 既存 rrq の submit で、ファイルリストが編集されている場合
       ;; diff を更新する
-      (when (y-or-n-p "upload diff?: ")
-	(rb/front-edit-update-diff-for info)))
+      (when (or no-interactive
+		(y-or-n-p "upload diff?: "))
+	(rb/front-edit-update-diff-for info rb/front-submit-and-publish-p)))
     (when (buffer-modified-p)
-      (when (y-or-n-p "submit?: ")
-	;; 新規 rrq の場合、登録と同時に publish される。
-	(rb/front-edit-submit-direct)
-	))
-    (kill-buffer)
-    (rb/front-list-redraw-view)
-    (message "ok")
+      (when (or no-interactive
+		(y-or-n-p "submit?: "))
+	(rb/front-edit-submit-direct rb/front-submit-and-publish-p)
+	(when (not no-interactive)
+	  (kill-buffer)
+	(rb/front-list-redraw-view)
+	)))
     ))
 
 (defun rb/front-edit-check-submit ()
-  (let ((info (rb/front-edit-get-info)))
-    (when (and
-	   (buffer-modified-p)
-	   ;; new の場合 submit で diff を含めて登録するので、
-	   ;; new 以外の時のみ submit する。
-	   (not (equal (plist-get info :state) "new")))
-      (when (y-or-n-p "buffer is modified. submit?: " )
-	(rb/front-edit-submit-direct)
-	))))
+  (when (buffer-modified-p)
+    (when (y-or-n-p "buffer is modified. submit?: " )
+      (rb/front-edit-submit-direct rb/front-submit-and-publish-p))))
 
 
-(defun rb/front-edit-submit-direct ()
-  (let ((info (rb/front-edit-get-info)))
-    (if (equal (plist-get info :state) "new")
-	(rb/front-new-request default-directory
-			      (rb/front-normalize-file-list (plist-get info :tool)
-							    default-directory
-							    (plist-get info :file-list))
-			      (plist-get info :title)
-			      (plist-get info :description)
-			      (plist-get info :test))
-      
-      (rb/front-edit-rrq (plist-get info :id)
-			    nil
-			    (plist-get info :title)
-			    (plist-get info :description)
-			    (plist-get info :test))
-      )
-    (set-buffer-modified-p nil)
-  ))
+(defun rb/front-edit-submit-direct (publish-p)
+  "現在の edit buffer の 情報を submit する。
+
+publish-p が nil 以外の場合 publish する。
+"
+  (let ((info (rb/front-edit-get-info))
+	id)
+    (setq id (rb/front-register-rrq (plist-get info :id)
+				    (plist-get info :title)
+				    (plist-get info :description)
+				    (plist-get info :test)))
+    (if (and id
+	     (equal (plist-get info :state) "new"))
+	;; new の場合、file-list も登録する。
+	(rb/front-exec-rbt id default-directory
+			   (rb/front-normalize-file-list id
+							 (plist-get info :tool)
+							 default-directory
+							 (plist-get info :file-list))
+			   (lambda (success)
+			     (when (and success publish-p)
+			       (rb/front-draft-publish id))))
+      (when publish-p
+	(rb/front-draft-publish id))
+      ))
+  (set-buffer-modified-p nil)
+  )
 
 (defun rb/front-edit-update-diff ()
   (interactive)
   (rb/front-edit-check-submit)
-  (rb/front-edit-update-diff-for (rb/front-edit-get-info)))
-  
+  (rb/front-edit-update-diff-for (rb/front-edit-get-info)
+				 rb/front-submit-and-publish-p)
+  )
 
-(defun rb/front-edit-update-diff-for (info)
+
+(defun rb/front-edit-update-diff-for (info publish-p)
   (let* ((id (plist-get info :id))
 	 (file-list (plist-get info :file-list))
 	 (base-dir (plist-get info :base-dir))
@@ -538,35 +692,93 @@ file-info は rb/front-file-info-create で生成する。
     (if (not id)
 	(message "This review request is not submit yet.")
       (when (equal base-dir "")
-	(setq base-dir
-	      (expand-file-name (read-file-name "basedir?: " "/"
-						(when rb/front-prev-basedir
-						  rb/front-prev-basedir) t
-					      rb/front-prev-basedir))))
+	(setq base-dir (rb/front-get-work-dir id)))
       (setq rb/front-prev-basedir base-dir)
       (rb/front-exec-rbt id base-dir
-			 (rb/front-normalize-file-list (plist-get info :tool)
+			 (rb/front-normalize-file-list id
+						       (plist-get info :tool)
 						       base-dir file-list)
 			 (lambda (success)
 			   (when (and success
+				      publish-p
 				      (equal (plist-get info :state) "public"))
 			     ;; diff を登録すると draft になるので public に戻す。
 			     (rb/front-draft-publish id))
-			 ))
+			   ))
       
       )))
 
 
 
-(add-hook 'svn-status-mode-hook 'rb/front-svn-hook)
-(defun rb/front-svn-hook ()
-  (local-set-key (kbd "j") 'rb/front-new-request-from-svn-status))
-(defun rb/front-new-request-from-svn-status ()
-  (interactive)
-  (rb/front-edit-add-file
-   (rb/front-file-info-create "Subversion"
-			      default-directory
-			      (svn-status-marked-file-names))))
 
+(defvar rb/front-commit-mode-hook nil
+  "Hooks called when rb/front-edit mode fires up.")
+
+(define-derived-mode rb/front-commit-mode
+  text-mode "rb/front-commit"
+  "Major mode for Review Board.
+          \\{rb/front-commit-mode-map}"
+  )
+
+(define-key rb/front-commit-mode-map (kbd "C-c C-c") 'rb/front-commit-submit)
+
+(defun rb/front-commit-view (id)
+  "file-info のコミットメッセージを編集するバッファを表示。
+"
+  (let* ((buf (get-buffer-create rb/front-commit-buf))
+	 (edit-info (rb/front-edit-get-info-at id))
+	 (tool (plist-get edit-info :tool))
+	 work-dir file-list pos conv-info)
+    (setq work-dir (rb/front-get-work-dir id))
+    (setq conv-info (rb/front-tool-get-work-info tool work-dir))
+    (with-current-buffer buf
+      (rb/front-commit-mode)
+
+      (setq file-list (rb/front-normalize-file-list id
+						    tool
+						    (plist-get conv-info :root-path)
+						    (plist-get edit-info :file-list)))
+      (setq default-directory (plist-get conv-info :root-path))
+
+      
+
+      (let ((inhibit-read-only t))
+	(erase-buffer)
+	(rb/front-insert-key-bind-doc
+	 '(("commit: " "(C-c C-c)" )
+	   (", cancel: " "(kill-buffer)")
+	   ("\n----\n")))
+
+	(rb/front-insert-readOnlyText-multi
+	 `(("work-directory: " ,rb/front-face-item)
+	   (,default-directory ,rb/front-face-emphasis)
+	   ("\n----\n" rb/front-face-message)))
+	
+	(dolist (file file-list)
+	  (rb/front-insert-readOnlyText (concat file "\n") rb/front-face-warning)
+	  )
+	(rb/front-insert-readOnlyText "----\n" rb/front-face-message)
+	(setq pos (point))
+	(insert (format "%s/r/%d/\n" rb/front-rb-url id))
+	(insert (rb/front-repstr (plist-get edit-info :description)
+				 "\r" ""))
+	)
+
+      (set (make-local-variable 'rb/front-commit-info)
+	   (list :edit-info edit-info :start-pos pos))
+      )
+    
+    (rb/front-switch-to-buffer-other-window buf)
+    (goto-char pos)
+    ))
+
+(defun rb/front-commit-submit ()
+  (interactive)
+  (let ((pos (plist-get rb/front-commit-info :start-pos))
+	(edit-info (plist-get rb/front-commit-info :edit-info)))
+    (rb/front-tool-commit-files (plist-get edit-info :tool)
+				(buffer-substring-no-properties pos (point-max))
+				(plist-get edit-info :top-dir)
+				(plist-get edit-info :file-list))))
 
 (provide 'rbfront-mode)

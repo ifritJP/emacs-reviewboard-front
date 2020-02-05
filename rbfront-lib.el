@@ -22,6 +22,8 @@
 ;; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 ;; SOFTWARE.
 
+(require 'rbfront-svn)
+
 
 (defvar rb/front-rb-api-token "")
 (defvar rb/front-rb-url "http://localhost/rb")
@@ -29,11 +31,62 @@
 (defvar rb/front-proxy "")
 (defvar rb/front-rb-repository "")
 
+(defvar rb/front-setting-file-path (concat user-emacs-directory "rbfront.json"))
+
+
 (defvar rb/front-access-buf "*rb/front/access*")
 (defvar rb/front-rbt-buf "*rb/front/rbt*")
 
 
+
 (defvar rb/front-rbt-cache-reviewer-candidate-list nil)
+
+
+(defvar rb/front-work-directory-hash (make-hash-table))
+
+(defun rb/front-setting-load()
+  (when (file-exists-p rb/front-setting-file-path)
+    (with-temp-buffer
+      (insert-file-contents rb/front-setting-file-path)
+      (let ((json-object-type 'plist)
+	    (json-array-type 'list)
+	    obj)
+	(setq obj (json-read-from-string
+		   (buffer-substring-no-properties (point-min) (point-max))))
+	(dolist (work-info (plist-get obj :work-directory))
+	  (puthash (plist-get work-info :id) work-info rb/front-work-directory-hash)
+	  )
+	)
+      ))
+    )
+(rb/front-setting-load)
+
+(defun rb/front-setting-save ()
+  (with-temp-file rb/front-setting-file-path
+    (let ((json-object-type 'plist)
+	  (json-array-type 'vector)
+	  obj
+	  )
+      (setq obj (list :work-directory
+		      (vconcat (hash-table-values rb/front-work-directory-hash))))
+      (insert (json-encode obj))
+      )))
+
+(defun rb/front-setting-get-work-info (id)
+  (gethash id rb/front-work-directory-hash))
+
+(defun rb/front-setting-set-work-info (id work-info)
+  (let ((prev (rb/front-setting-get-work-info id)))
+    (if (and (equal (plist-get work-info :id) (plist-get prev :id))
+	     (equal (plist-get work-info :top-dir) (plist-get prev :top-dir))
+	     (equal (plist-get work-info :base-dir) (plist-get prev :base-dir)))
+	;; hash に登録済みの場合は、何もしない
+	nil
+      ;; hash に登録してあるものと異なる場合は、登録
+      (puthash id work-info rb/front-work-directory-hash)
+      (rb/front-setting-save)
+      )))
+
 
 (defun rb/front-get-send-data (alist)
   "
@@ -86,6 +139,7 @@ callback は、 rbt 終了時に実行するコールバック。
 "
   (with-current-buffer (get-buffer-create rb/front-rbt-buf)
     (erase-buffer)
+    (insert "processing...\n")
     (setq default-directory (expand-file-name basedir))
     (let (process)
       (setq process
@@ -99,8 +153,11 @@ callback は、 rbt 終了時に実行するコールバック。
 				(lambda (proc event)
 				  (rb/front-exec-rbt-sentinel proc event callback)))
 	(callback nil))
-      (rb/front-switch-to-buffer-other-window rb/front-rbt-buf))
-  ))
+      (rb/front-switch-to-buffer-other-window rb/front-rbt-buf)
+      (end-of-buffer)
+      (recenter 0)
+      )
+    ))
 
 (defun rb/front-access (obj &rest key-list)
   (dolist (key key-list)
@@ -159,7 +216,7 @@ body-info は (content-type body)。 不要な場合は nil.
     (when key-list
       (setq obj (apply 'rb/front-access obj key-list)))
     obj
-  ))
+    ))
 
 (defun rb/front-close-rrq (rrq)
   (let ((id (plist-get rrq :id)))
@@ -179,16 +236,16 @@ body-info は (content-type body)。 不要な場合は nil.
    )
   )
 
-(defun rb/front-edit-rrq (id private-p title description testing_done)
+(defun rb/front-update-rrq (id publish title description testing_done)
   "id のドラフト review request の情報を編集する"
   (rb/front-access-web
    (format "/api/review-requests/%d/draft/" id) "PUT"
    (rb/front-get-send-data `(("description" ,(or description ""))
 			     ("summary" ,(or title "new review"))
 			     ("testing_done" ,(or testing_done ""))
-			     ,(if (not private-p)
-				  ;; public でない場合、 public に切り替える
-				  (list "public" "true"))
+			     ,(when publish
+				;; public でない場合、 public に切り替える
+				(list "public" "true"))
 			     ))
    )
   )
@@ -196,8 +253,8 @@ body-info は (content-type body)。 不要な場合は nil.
 (defun rb/front-has-draft (id)
   "指定の id の review request が draft を持っているか？"
   (rb/front-access-web
-		  (format "/api/review-requests/%d/draft/" id)
-		  nil nil :draft))
+   (format "/api/review-requests/%d/draft/" id)
+   nil nil :draft))
 
 (defun rb/front-public-p (rrq)
   (eq (plist-get rrq :public) t))
@@ -211,22 +268,19 @@ body-info は (content-type body)。 不要な場合は nil.
 summary 等が draft 情報にしか入っていないので、draft から情報をとる。
 "
   (let ((id (plist-get rrq :id)))
-    (if (rb/front-public-p rrq)
-	;; public ならそのまま返す
-	rrq
-      ;;; public でなければ draft を取る
-      (let ((obj (rb/front-access-web
-		  (format "/api/review-requests/%d/draft/" id)
-		  nil nil :draft)))
+    (let ((obj (rb/front-access-web
+		(format "/api/review-requests/%d/draft/" id)
+		nil nil :draft)))
+      (when obj
 	;; draft の ID は draft_id として保持
 	(plist-put rrq :draft_id (plist-get obj :id))
 	;; summary, description, testing_done を上書き
 	(plist-put rrq :summary (plist-get obj :summary))
 	(plist-put rrq :description (plist-get obj :description))
-	(plist-put rrq :testing_done (plist-get obj :testing_done))
-	rrq)
-      )
-    ))
+	(plist-put rrq :testing_done (plist-get obj :testing_done)))
+      rrq)
+    )
+  )
 
 (defun rb/front-get-request (id)
   "id の review request の情報を取得する"
@@ -242,27 +296,30 @@ summary 等が draft 情報にしか入っていないので、draft から情�
     (rb/front-access-web url nil nil :repository :tool)))
 
 
-(defun rb/front-new-request (basedir file-list
-				     &optional title description testing_done)
-  "review request を新規に登録する。
-同時に publish する。
+(defun rb/front-register-rrq (&optional id title description testing_done)
+  "review request を登録する。
+
+id: rrq の ID。 新規登録の場合 nil を指定。
+
+この関数は ID を返す。失敗した場合 nil。
 "
-  (let (new-resp id)
-    (setq new-resp
-	  ;; 新規登録。 diff を登録できるように repository を設定。
-	  (rb/front-access-web
-	   "/api/review-requests/" "POST"
-	   (rb/front-get-send-data `(("repository" ,rb/front-rb-repository)))
-	   ))
-    (when (equal (plist-get new-resp :stat) "ok")
-      (setq id (rb/front-access new-resp :review_request :id))
-      (rb/front-edit-rrq id t title description testing_done)
+  (let (new-resp)
+    (when (not id)
+      (setq new-resp
+	    ;; 新規登録。 diff を登録できるように repository を設定。
+	    (rb/front-access-web
+	     "/api/review-requests/" "POST"
+	     (rb/front-get-send-data `(("repository" ,rb/front-rb-repository)))
+	     ))
+      (when (equal (plist-get new-resp :stat) "ok")
+	(setq id (rb/front-access new-resp :review_request :id)))
       )
-    (rb/front-exec-rbt id basedir file-list
-		       (lambda (success)
-			 (when success
-			   (rb/front-draft-publish id))))
-    ))
+    (when id
+      (rb/front-update-rrq id nil title description testing_done))
+    )
+  id
+  )
+
 
 
 ;; 
@@ -318,7 +375,7 @@ summary 等が draft 情報にしか入っていないので、draft から情�
 		(plist-get X :source_file))
 	      (rb/front-access-web url nil nil :files)
 	      ))
-  ))
+    ))
 
 
 (defun rb/front-get-review-list (id)
@@ -384,49 +441,28 @@ path reviewboard に登録されているパス。
 "
   (file-relative-name
    (expand-file-name 
-    (file-relative-name path (plist-get conv-info :root-url))
+    (file-relative-name path (plist-get conv-info :root-url-relative))
     (plist-get conv-info :root-path))
    base-dir))
 
-(defun rb/front-normalize-file-list (tool base-dir file-list)
+(defun rb/front-normalize-file-list (id tool base-dir file-list)
   "review board に登録されているパスを、 base-dir からのローカルパスに変換する"
   (let ((local-path-list file-list))
     (let (repo-path-info)
-      (cond ((equal tool "Subversion")
-	     (setq repo-path-info (rb/front-svn-info base-dir))
-	     (setq local-path-list
-		   (mapcar (lambda (X)
-			     (rb/front-registered-path-to-local-path repo-path-info
-								     base-dir X))
-			   file-list))
-	     )
-	    (t
-	     (error (concat "not support -- " tool)))
-	    )
+      (setq repo-path-info (rb/front-tool-get-work-info tool base-dir))
+      (rb/front-setting-set-work-info
+       id (list :id id :base-dir base-dir
+		:top-dir (plist-get repo-path-info :root-path)))
+      (setq local-path-list
+	    (mapcar (lambda (X)
+		      (rb/front-registered-path-to-local-path repo-path-info
+							      base-dir X))
+		    file-list))
       )
     local-path-list
     ))
 
 
-
-
-(defun rb/front-svn-info (base-dir)
-  (let (root-path root-url)
-    (with-temp-buffer
-      (call-process "svn" nil (current-buffer) nil "info" base-dir)
-      (beginning-of-buffer)
-      (re-search-forward "Working Copy Root Path: ")
-      (setq root-path (buffer-substring-no-properties (point) (point-at-eol)))
-      )
-    (with-temp-buffer
-      (call-process "svn" nil (current-buffer) nil "info" root-path)
-      (beginning-of-buffer)
-      (re-search-forward "Relative URL: ^/")
-      (setq root-url (buffer-substring-no-properties (point) (point-at-eol)))
-      )
-    (list :root-path root-path :root-url root-url)
-    )
-  )
 
 
 (defun rb/front-path-join (dir path)
@@ -435,10 +471,32 @@ path reviewboard に登録されているパス。
 (defun rb/front-repstr (target-string source-string destination-string
 				      &optional regexp )
   (while (string-match source-string target-string)
-      (setq target-string (replace-match destination-string
-					 t (not regexp) target-string)))
-    target-string)
+    (setq target-string (replace-match destination-string
+				       t (not regexp) target-string)))
+  target-string)
 
 
+
+(defvar rb/front-tool-funcs-list `("Subversion" ,rb/front-svn-funcs))
+
+(defun rb/front-tool-get-funcs (tool)
+  (or (cadr (member tool rb/front-tool-funcs-list))
+      (error (concat "not support tool -- " tool)))
+  )
+
+(defun rb/front-tool-get-work-info (tool base-dir)
+  (funcall (plist-get (rb/front-tool-get-funcs tool) :work-info) base-dir)
+  )
+
+(defun rb/front-tool-get-setup-to-add-files (tool base-dir)
+  (funcall (plist-get (rb/front-tool-get-funcs tool)
+		      :setup-to-add-files)
+	   base-dir)
+  )
+(defun rb/front-tool-commit-files (tool message work-dir file-list)
+  (funcall (plist-get (rb/front-tool-get-funcs tool)
+		      :commit-files)
+	   message work-dir file-list)
+  )
 
 (provide 'rbfront-lib)

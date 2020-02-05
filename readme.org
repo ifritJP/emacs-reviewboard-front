@@ -34,5 +34,5 @@
 
 ** listing review requests  
   
-- M-x rb/front-list-view
+- M-x rb/front-list
   
