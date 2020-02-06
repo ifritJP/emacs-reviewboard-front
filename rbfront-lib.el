@@ -78,6 +78,7 @@
 (defun rb/front-setting-set-work-info (id work-info)
   (let ((prev (rb/front-setting-get-work-info id)))
     (if (and (equal (plist-get work-info :id) (plist-get prev :id))
+	     (equal (plist-get work-info :tool) (plist-get prev :tool))
 	     (equal (plist-get work-info :top-dir) (plist-get prev :top-dir))
 	     (equal (plist-get work-info :base-dir) (plist-get prev :base-dir)))
 	;; hash に登録済みの場合は、何もしない
@@ -86,6 +87,8 @@
       (puthash id work-info rb/front-work-directory-hash)
       (rb/front-setting-save)
       )))
+
+
 
 
 (defun rb/front-get-send-data (alist)
@@ -123,10 +126,17 @@ alist は (名前 値) のリスト。
       )
     ))
 
+(defun rb/front-set-default-dir (dir)
+  (setq default-directory (file-name-as-directory (expand-file-name dir))))
+			  
+			  
+
 (defun rb/front-exec-rbt-sentinel (process event callback)
   (let ((status (process-status process)))
     (when (or (eq status 'exit)
 	      (eq status 'signal))
+      (with-current-buffer (get-buffer-create rb/front-rbt-buf)
+	(insert (propertize "\n\nend!" 'face rb/front-face-warning)))
       (funcall callback (eq (process-exit-status process) 0)))))
 
 (defun rb/front-exec-rbt (id basedir file-list &optional callback)
@@ -140,22 +150,28 @@ callback は、 rbt 終了時に実行するコールバック。
   (with-current-buffer (get-buffer-create rb/front-rbt-buf)
     (erase-buffer)
     (insert "processing...\n")
-    (setq default-directory (expand-file-name basedir))
-    (let (process)
-      (setq process
-	    (apply 'start-process rb/front-rbt-buf rb/front-rbt-buf
-		   rb/front-rbt "post" "--repository" rb/front-rb-repository
+    (rb/front-set-default-dir basedir)
+    (let (process opt-list)
+      (setq opt-list
+	    (append
+	     (list "post" "--repository" rb/front-rb-repository
 		   "--server" rb/front-rb-url "--api-token" rb/front-rb-api-token
-		   "-r" (format "%s" id)
-		   (apply 'append (mapcar (lambda (X) (list "-I" X)) file-list))))
-      (if (processp process)
-	  (set-process-sentinel process
-				(lambda (proc event)
-				  (rb/front-exec-rbt-sentinel proc event callback)))
-	(callback nil))
-      (rb/front-switch-to-buffer-other-window rb/front-rbt-buf)
-      (end-of-buffer)
-      (recenter 0)
+		   "-r" (format "%s" id))
+	     (apply 'append (mapcar (lambda (X) (list "-I" X)) file-list))))
+      (insert (format "dir: %s\n" basedir))
+      (insert (format "command: %s\n" (cons rb/front-rbt opt-list)))
+      (insert "---------\n")
+      (setq process
+      	    (apply 'start-process rb/front-rbt-buf rb/front-rbt-buf
+      		   rb/front-rbt opt-list))
+      (if (not (processp process))
+	  (callback nil)
+	(set-process-sentinel process
+			      (lambda (proc event)
+				(rb/front-exec-rbt-sentinel proc event callback)))
+	(rb/front-switch-to-buffer-other-window rb/front-rbt-buf)
+	(end-of-buffer)
+	(recenter -1))
       )
     ))
 
@@ -165,6 +181,7 @@ callback は、 rbt 終了時に実行するコールバック。
     )
   obj
   )
+
 
 
 (defun rb/front-access-web (url &optional method body-info &rest key-list)
@@ -211,8 +228,10 @@ body-info は (content-type body)。 不要な場合は nil.
       (let ((json-object-type 'plist)
 	    (json-array-type 'list))
 	(setq obj (json-read-from-string
-		   (buffer-substring-no-properties (point-min)
-						   (point-max))))))
+		   (rb/front-repstr (buffer-substring-no-properties (point-min)
+								    (point-max))
+				    "\\\\r\\\\n" "\\n"
+				    )))))
     (when key-list
       (setq obj (apply 'rb/front-access obj key-list)))
     obj
@@ -382,15 +401,74 @@ id: rrq の ID。 新規登録の場合 nil を指定。
   "レビューコメントリストを取得する"
   (apply 'append
 	 (mapcar (lambda (review)
-		   (rb/front-access-web
-		    (rb/front-access review :links :diff_comments :href)
-		    nil nil :diff_comments))
+		   (let (comment-list)
+		     (setq comment-list (rb/front-access-web
+					 (rb/front-access review
+							  :links :diff_comments :href)
+					 nil nil :diff_comments))
+		     (mapcar (lambda (X)
+			       (plist-put X :review-id (plist-get review :id)))
+			     comment-list)))
 		 (rb/front-access-web (format "/api/review-requests/%d/reviews/" id)
-				      nil nil :reviews)))
-  )
+				      nil nil :reviews))))
 
+(defun rb/front-get-review-comment (id review-id comment-id)
+  (rb/front-access-web
+   (format "/api/review-requests/%d/reviews/%d/diff-comments/%d/"
+	   id review-id comment-id)
+   nil nil :diff_comment))
 
+(defun rb/front-get-reply-hash (id)
+  "rrq id に対する reply コメントの
+hash (返信元の コメント id → reply コメント) を取得する。
+"
+  (let ((reply-hash (make-hash-table))
+	reply-list reply-comment-list)
+    (setq reply-list
+	  (apply 'append
+		  (mapcar (lambda (review)
+			    (rb/front-access-web
+			     (rb/front-access review :links :replies :href)
+			     nil nil :replies))
+			  (rb/front-access-web
+			   (format "/api/review-requests/%d/reviews/" id)
+			   nil nil :reviews))))
+    (setq reply-comment-list
+	  (apply 'append
+		 (mapcar (lambda (reply)
+			   (rb/front-access-web
+			    (rb/front-access reply :links :diff_comments :href)
+			    nil nil :diff_comments))
+			 reply-list)))
+    (dolist (reply reply-comment-list)
+      (let ((work (rb/front-access reply :links :reply_to :href))
+	    parent-id reply-list sub-reply-list)
+	(setq parent-id (string-to-number
+			 (rb/front-repstr work ".*/\\([0-9]+\\)/$" "\\1" t)))
+	(setq sub-reply-list (gethash parent-id reply-hash))
+	(add-to-list 'sub-reply-list reply t)
+	(puthash parent-id sub-reply-list reply-hash)
+	)
+      )
+    reply-hash
+    ))
 
+(defun rb/front-add-reply-comment (id review-id comment-id reply-comment)
+  "rrq id の レビュー review-id の コメント comment-id に対する
+リプライreply-comment を登録する。
+リプライは reviewboard のシステム上、編集できないので要注意。
+"
+  (let ((info (rb/front-access-web
+	       (format "/api/review-requests/%d/reviews/%d/replies/" id review-id)
+	       "POST" nil :reply :links)))
+    (rb/front-access-web
+     (rb/front-access info :diff_comments :href) "POST"
+     (rb/front-get-send-data `(("reply_to_id" ,comment-id)
+			       ("text" ,reply-comment)
+			       )))
+    (rb/front-access-web (rb/front-access info :update :href) "PUT"
+			 (rb/front-get-send-data `(("public" 1))))
+    ))
 
 (defun rb/front-get-reviewer-candidate-list (&optional force)
   "reviewer に登録するユーザリストを取得する。
@@ -451,7 +529,7 @@ path reviewboard に登録されているパス。
     (let (repo-path-info)
       (setq repo-path-info (rb/front-tool-get-work-info tool base-dir))
       (rb/front-setting-set-work-info
-       id (list :id id :base-dir base-dir
+       id (list :tool tool :id id :base-dir base-dir
 		:top-dir (plist-get repo-path-info :root-path)))
       (setq local-path-list
 	    (mapcar (lambda (X)

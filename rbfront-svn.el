@@ -40,7 +40,7 @@
 
 (defun rb/front-svn-commit-files (message work-dir file-list)
   (with-current-buffer (get-buffer-create rb/front-svn-buf)
-    (setq default-directory work-dir)
+    (rb/front-set-default-dir work-dir)
     (let (process input-file)
       (with-temp-buffer
 	(setq input-file (make-temp-file "rbfront-svn" nil nil))
@@ -72,14 +72,14 @@
 (defun rb/front-svn-info (base-dir)
   (let (root-path root-url)
     (with-temp-buffer
-      (setq default-directory base-dir)
+      (rb/front-set-default-dir base-dir)
       (call-process "svn" nil (current-buffer) nil "info" base-dir)
       (beginning-of-buffer)
       (re-search-forward "Working Copy Root Path: ")
       (setq root-path (buffer-substring-no-properties (point) (point-at-eol)))
       )
     (with-temp-buffer
-      (setq default-directory root-path)
+      (rb/front-set-default-dir root-path)
       (call-process "svn" nil (current-buffer) nil "info" root-path)
       (beginning-of-buffer)
       (re-search-forward "Relative URL: ^/")
