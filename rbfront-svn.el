@@ -39,27 +39,22 @@
       )))
 
 (defun rb/front-svn-commit-files (message work-dir file-list)
-  (with-current-buffer (get-buffer-create rb/front-svn-buf)
-    (rb/front-set-default-dir work-dir)
-    (let (process input-file)
-      (with-temp-buffer
-	(setq input-file (make-temp-file "rbfront-svn" nil nil))
-	(insert message)
-	(write-region (point-min) (point-max) input-file)
-	)
-      (insert "processing...\n")
-      
-      (setq process
-	    (apply 'start-process rb/front-svn-buf rb/front-svn-buf
-		   rb/front-svn-path "commit" "-F" input-file file-list))
-      (when (processp process)
-	(set-process-sentinel process
-			      (lambda (proc event)
-				(rb/front-svn-commit-sentinel proc event input-file))))
-      (rb/front-switch-to-buffer-other-window rb/front-svn-buf)
-      (end-of-buffer)
-      (recenter 0)
+  (let (process input-file)
+    (with-temp-buffer
+      (setq input-file (make-temp-file "rbfront-svn" nil nil))
+      (insert message)
+      (write-region (point-min) (point-max) input-file)
       )
+    (setq process
+	  (rb/front-call-process work-dir rb/front-svn-buf
+				 (get-buffer-create rb/front-svn-buf)
+				 rb/front-svn-path "commit" "-F" input-file
+				 file-list))
+    (when (processp process)
+      (set-process-sentinel process
+			    (lambda (proc event)
+			      (rb/front-svn-commit-sentinel proc event
+							    input-file))))
     )
   )
       

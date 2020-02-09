@@ -139,6 +139,28 @@ alist は (名前 値) のリスト。
 	(insert (propertize "\n\nend!" 'face rb/front-face-warning)))
       (funcall callback (eq (process-exit-status process) 0)))))
 
+(defun rb/front-call-process (dir name out-buf command &rest arg-list)
+  (let (process)
+    (setq arg-list
+	  (apply 'append (mapcar (lambda (X)
+				   (if (listp X)
+				       X
+				     (list X)))
+				 arg-list)))
+    (with-current-buffer out-buf
+      (erase-buffer)
+      (insert "processing...\n")
+      (rb/front-set-default-dir dir)
+      (insert (format "dir: %s\n" default-directory))
+      (insert (format "command: %s\n" (cons command arg-list)))
+      (insert "---------\n")
+      (setq process (apply 'start-process name out-buf command arg-list))
+      )
+    (rb/front-switch-to-buffer-other-window out-buf)
+    (end-of-buffer)
+    (recenter -1)
+    process))
+
 (defun rb/front-exec-rbt (id basedir file-list &optional callback)
   "id の review request に file-list の diff を登録する。
 
@@ -227,11 +249,13 @@ body-info は (content-type body)。 不要な場合は nil.
     (with-current-buffer rb/front-access-buf
       (let ((json-object-type 'plist)
 	    (json-array-type 'list))
-	(setq obj (json-read-from-string
-		   (rb/front-repstr (buffer-substring-no-properties (point-min)
-								    (point-max))
-				    "\\\\r\\\\n" "\\n"
-				    )))))
+	(if (equal method "DELETE")
+	    (setq obj nil)
+	  (setq obj (json-read-from-string
+		     (rb/front-repstr (buffer-substring-no-properties (point-min)
+								      (point-max))
+				      "\\\\r\\\\n" "\\n"
+				      ))))))
     (when key-list
       (setq obj (apply 'rb/front-access obj key-list)))
     obj
@@ -340,6 +364,10 @@ id: rrq の ID。 新規登録の場合 nil を指定。
   )
 
 
+(defun rb/front-draft-discard (id)
+  (rb/front-access-web
+   (format "/api/review-requests/%d/draft/" id) "DELETE")
+  )
 
 ;; 
 (defun rb/front-draft-publish (id &optional force)

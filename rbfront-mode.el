@@ -27,6 +27,8 @@
 
 (defvar rb/front-submit-and-publish-p t
   "nil 以外の場合、submit と同時に publish する。")
+(defvar rb/front-display-comment-p t
+  "nil 以外の場合 review comments を表示する。")
 
 (defvar rb/front-edit-info-default
   '(:title "new title"
@@ -363,8 +365,9 @@ TOP-DIR に、ローカルのワークディレクトリのトップディレク
 	 (", publish: " "(C-c C-p)")
 	 (", cancel: " "(kill-buffer)")
 	 ("\nsave to draft: " "(C-x C-s)" )
+	 (", discard draft: " "(C-c D)" )
 	 (", toggle publish mode: " "(C-c C-t)" )
-	 (", redraw: " "(C-c R)" )
+	 ("\nredraw: " "(C-c R)" )
 	 ("\n------\n" )))
       (rb/front-insert-readOnlyText-multi
        `(("submit-mode: " ,rb/front-face-item)
@@ -373,6 +376,11 @@ TOP-DIR に、ローカルのワークディレクトリのトップディレク
 	     "only submit")
 	  ,rb/front-face-warning)
 	 ("\n" nil)))
+      (rb/front-insert-readOnlyText-multi
+       (list (list "url: " rb/front-face-item)
+	     (list (if id (format "%sr/%d/\n" rb/front-rb-url id)
+		     "--\n")
+		   rb/front-face-warning)))
       (rb/front-insert-readOnlyText (format "tool: %s\n" (plist-get info :tool))
 				    rb/front-face-item)
       (rb/front-insert-readOnlyText (format "top-dir: %s\n"
@@ -427,35 +435,40 @@ TOP-DIR に、ローカルのワークディレクトリのトップディレク
 	(rb/front-insert-readOnlyText "review comments: --->"
 				      rb/front-face-emphasis "\n")
 	(rb/front-insert-key-bind-doc
-	 '(("add reply: " "(C-c C-r)")
+	 '(("toggle display comments: " "(C-c C-d)")
+	   (", nadd reply: " "(C-c C-r)")
 	   ("\n")))
-	
-	(setq reply-hash (rb/front-get-reply-hash id))
-	
-	(dolist (review (rb/front-get-review-list id))
-	  (rb/front-insert-readOnlyText-multi
-	   (list (list (format "(%d:%d:" (plist-get review :review-id)
-			       (plist-get review :id) ) rb/front-face-bold)
-		 (if (equal (plist-get review :issue_status) "open")
-		     (list "open" rb/front-face-warning)
-		   (list "close" rb/front-face-bold))
-		 (list (format "):%s:%s\n"
-			       (rb/front-repstr 
-				(rb/front-access review :links :filediff :title)
-				" ([^()]+) ->.*" "" t)
-			       (plist-get review :first_line))
-		       rb/front-face-bold)))
-	  (rb/front-insert-readOnlyText (plist-get review :text)
-					rb/front-face-item "\n")
-	  ;; レスポンス表示
-	  (let ((reply-list (gethash (plist-get review :id) reply-hash)))
-	    (dolist (reply reply-list)
-	      (rb/front-insert-readOnlyText
-	       (format "--> %s" (plist-get reply :text))
-	       rb/front-face-message "\n")))
-	  )
-	(rb/front-insert-readOnlyText "<---"
-				      rb/front-face-emphasis "\n")
+
+	(if (not rb/front-display-comment-p)
+	    (rb/front-insert-readOnlyText
+	     "Please hit key 'C-c C-d' to display review comments"
+	     rb/front-face-warning)
+	  (setq reply-hash (rb/front-get-reply-hash id))
+	  
+	  (dolist (review (rb/front-get-review-list id))
+	    (rb/front-insert-readOnlyText-multi
+	     (list (list (format "(%d:%d:" (plist-get review :review-id)
+				 (plist-get review :id) ) rb/front-face-bold)
+		   (if (equal (plist-get review :issue_status) "open")
+		       (list "open" rb/front-face-warning)
+		     (list "close" rb/front-face-bold))
+		   (list (format "):%s:%s\n"
+				 (rb/front-repstr 
+				  (rb/front-access review :links :filediff :title)
+				  " ([^()]+) ->.*" "" t)
+				 (plist-get review :first_line))
+			 rb/front-face-bold)))
+	    (rb/front-insert-readOnlyText (plist-get review :text)
+					  rb/front-face-item "\n")
+	    ;; レスポンス表示
+	    (let ((reply-list (gethash (plist-get review :id) reply-hash)))
+	      (dolist (reply reply-list)
+		(rb/front-insert-readOnlyText
+		 (format "--> %s" (plist-get reply :text))
+		 rb/front-face-message "\n")))
+	    )
+	  (rb/front-insert-readOnlyText "<---"
+					rb/front-face-emphasis "\n"))
 	)
 
       (goto-line backup-lineno)
@@ -477,10 +490,12 @@ TOP-DIR に、ローカルのワークディレクトリのトップディレク
 (define-key rb/front-edit-mode-map (kbd "C-c C-a") 'rb/front-edit-add-file-to)
 (define-key rb/front-edit-mode-map (kbd "C-c C-SPC") 'rb/front-edit-toggle-marking-file)
 (define-key rb/front-edit-mode-map (kbd "C-c C-c") 'rb/front-edit-submit)
+(define-key rb/front-edit-mode-map (kbd "C-c D") 'rb/front-edit-discard-draft)
 (define-key rb/front-edit-mode-map (kbd "C-c C-p") 'rb/front-edit-publish)
 (define-key rb/front-edit-mode-map (kbd "C-c C-t") 'rb/front-edit-toggle-publish-mode)
 (define-key rb/front-edit-mode-map (kbd "C-c C-u") 'rb/front-edit-update-diff)
 (define-key rb/front-edit-mode-map (kbd "C-c R") 'rb/front-edit-redraw)
+(define-key rb/front-edit-mode-map (kbd "C-c C-d") 'rb/front-edit-toggle-display-review)
 (define-key rb/front-edit-mode-map (kbd "C-c C") 'rb/front-edit-commit)
 (define-key rb/front-edit-mode-map (kbd "C-c C-r") 'rb/front-edit-set-reply)
 (define-key rb/front-edit-mode-map (kbd "C-x C-s") 'rb/front-edit-save-to-draft)
@@ -559,12 +574,12 @@ file-info は rb/front-file-info-create で生成する。
 (defun rb/front-edit-add-file-to ()
   (interactive)
   (rb/front-edit-check-submit)
+  (setq rb/front-edit-during-to-add-file t)
   (let* ((info (rb/front-edit-get-info))
 	 (tool (plist-get info :tool))
 	 (work-dir (rb/front-get-work-dir (plist-get info :id)))
 	 )
     (setq rb/front-prev-basedir work-dir)
-    (setq rb/front-edit-during-to-add-file t)
     (rb/front-tool-get-setup-to-add-files tool work-dir)
     ))
 
@@ -705,10 +720,23 @@ file-info は rb/front-file-info-create で生成する。
     )
   )
 
+(defun rb/front-edit-toggle-display-review ()
+  (interactive)
+  (setq rb/front-display-comment-p (not rb/front-display-comment-p))
+  (rb/front-edit-redraw (rb/front-edit-get-info)))
+  )
 (defun rb/front-edit-toggle-publish-mode ()
   (interactive)
   (setq rb/front-submit-and-publish-p (not rb/front-submit-and-publish-p))
   (rb/front-edit-redraw (rb/front-edit-get-info)))
+
+(defun rb/front-edit-discard-draft ()
+  (interactive)
+  (let ((info (rb/front-edit-get-info)))
+    (rb/front-draft-discard (plist-get info :id))
+    (kill-buffer rb/front-edit-buf)
+    (rb/front-list-redraw-view)
+  ))
 
 (defun rb/front-edit-publish ()
   (interactive)
@@ -838,7 +866,7 @@ publish-p が nil 以外の場合 publish する。
       (let ((inhibit-read-only t))
 	(erase-buffer)
 	(funcall header-draw)
-	(rb/front-insert-readOnlyText "----\n" rb/front-face-message)
+	(rb/front-insert-readOnlyText "----" rb/front-face-message "\n")
 	
 	(setq pos (point))
 	(plist-put rb/front-text-info :start-pos pos)
@@ -855,10 +883,11 @@ publish-p が nil 以外の場合 publish する。
 (defun rb/front-text-submit ()
   (interactive)
   (when (y-or-n-p "submit?: ")
-    (let ((pos (plist-get rb/front-text-info :start-pos)))
+    (let ((pos (plist-get rb/front-text-info :start-pos))
+	  (buf (current-buffer)))
       (funcall (plist-get rb/front-text-info :submit)
 	       (buffer-substring-no-properties pos (point-max)))
-      (kill-buffer)
+      (kill-buffer buf)
   )))
 
 
@@ -896,7 +925,7 @@ publish-p が nil 以外の場合 publish する。
        (plist-put rb/front-text-info :edit-info edit-info)
        )
      (lambda ()
-       (insert (format "%s/r/%d/\n" rb/front-rb-url id))
+       (insert (format "%sr/%d/\n" rb/front-rb-url id))
        (insert (plist-get edit-info :description))
        )
      'rb/front-commit-submit
@@ -909,10 +938,15 @@ publish-p が nil 以外の場合 publish する。
   (interactive)
   (let ((pos (plist-get rb/front-text-info :start-pos))
 	(edit-info (plist-get rb/front-text-info :edit-info)))
-    (rb/front-tool-commit-files (plist-get edit-info :tool)
-				message
-				(plist-get edit-info :top-dir)
-				(plist-get edit-info :file-list))
+    (rb/front-tool-commit-files
+     (plist-get edit-info :tool)
+     message
+     (plist-get edit-info :top-dir)
+     (rb/front-normalize-file-list (plist-get edit-info :id)
+				   (plist-get edit-info :tool)
+				   (plist-get edit-info :top-dir)
+				   (plist-get edit-info :file-list))
+     )
     ))
 
 (provide 'rbfront-mode)

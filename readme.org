@@ -36,3 +36,11 @@
   
 - M-x rb/front-list
   
+* TODO
+
+- [ ] 新規で edit を開いた後、 C-x C-s や only submit すると、
+      id が nil のままになる。
+- [X] display the review request url
+- [X] toggle the reply display mode
+- [X] discard the draft
+  
