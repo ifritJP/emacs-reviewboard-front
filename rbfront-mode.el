@@ -724,7 +724,7 @@ file-info は rb/front-file-info-create で生成する。
   (interactive)
   (setq rb/front-display-comment-p (not rb/front-display-comment-p))
   (rb/front-edit-redraw (rb/front-edit-get-info)))
-  )
+
 (defun rb/front-edit-toggle-publish-mode ()
   (interactive)
   (setq rb/front-submit-and-publish-p (not rb/front-submit-and-publish-p))
