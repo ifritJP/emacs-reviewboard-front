@@ -76,13 +76,20 @@
   (gethash id rb/front-work-directory-hash))
 
 (defun rb/front-setting-set-work-info (id work-info)
-  (let ((prev (rb/front-setting-get-work-info id)))
+  (let ((prev (rb/front-setting-get-work-info id))
+	diff)
     (if (and (equal (plist-get work-info :id) (plist-get prev :id))
 	     (equal (plist-get work-info :tool) (plist-get prev :tool))
 	     (equal (plist-get work-info :top-dir) (plist-get prev :top-dir))
-	     (equal (plist-get work-info :base-dir) (plist-get prev :base-dir)))
-	;; hash に登録済みの場合は、何もしない
-	nil
+	     )
+	(when (not (or (not (plist-get work-info :base-dir))
+		       (equal (plist-get work-info :base-dir)
+			      (plist-get prev :base-dir))))
+	  (setq diff t))
+      (setq diff t))
+    (when diff
+      (when (not (plist-get work-info :base-dir))
+	(plist-put work-info :base-dir (plist-get work-info :top-dir)))
       ;; hash に登録してあるものと異なる場合は、登録
       (puthash id work-info rb/front-work-directory-hash)
       (rb/front-setting-save)
@@ -551,19 +558,29 @@ path reviewboard に登録されているパス。
     (plist-get conv-info :root-path))
    base-dir))
 
-(defun rb/front-normalize-file-list (id tool base-dir file-list)
-  "review board に登録されているパスを、 base-dir からのローカルパスに変換する"
-  (let ((local-path-list file-list))
+(defun rb/front-normalize-file-list (id tool base-dir file-list &optional unmark-files)
+  "review board に登録されているパスを、 base-dir からのローカルパスに変換する。
+
+unmark-files: 非選択のファイルリスト。
+  file-list 内のファイルで、変換対象外にするファイルを指定する。
+
+"
+  (let (local-path-list)
+    (setq local-path-list (delq nil (mapcar (lambda (X)
+					      (if (member X unmark-files)
+						  nil
+						X))
+					    file-list)))
     (let (repo-path-info)
       (setq repo-path-info (rb/front-tool-get-work-info tool base-dir))
       (rb/front-setting-set-work-info
-       id (list :tool tool :id id :base-dir base-dir
-		:top-dir (plist-get repo-path-info :root-path)))
+       id (list :tool tool :id id
+      		:top-dir (plist-get repo-path-info :root-path)))
       (setq local-path-list
 	    (mapcar (lambda (X)
 		      (rb/front-registered-path-to-local-path repo-path-info
 							      base-dir X))
-		    file-list))
+		    local-path-list))
       )
     local-path-list
     ))

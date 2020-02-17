@@ -214,7 +214,7 @@ buf が既にいずれかの window に表示されている場合は、その w
   (interactive)
   (rb/front-list-current-do
    (lambda (rrq)
-     (rb/front-commit-view (plist-get rrq :id))
+     (rb/front-commit-view (rb/front-edit-convert-rrq-to-info rrq))
     )))
 
 (defun rb/front-list-edit-current ()
@@ -281,11 +281,15 @@ TOP-DIR に、ローカルのワークディレクトリのトップディレク
     (setq work-root (plist-get conv-info :root-path))
     (setq rb-path-list
 	  (mapcar (lambda (X)
-		    (rb/front-path-join
-		     (plist-get conv-info :root-url-relative)
-		     (file-relative-name (expand-file-name X base-dir)
-					 work-root)
-		     ))
+		    (let ((full-path (expand-file-name X base-dir)))
+		      (when (file-directory-p full-path)
+			;; ディレクトリはエラー
+			(error (format "not support directory -- %s" X))
+			)
+		      (rb/front-path-join
+		       (plist-get conv-info :root-url-relative)
+		       (file-relative-name full-path work-root))
+		       ))
 		  file-list))
     (plist-put file-info :file-list rb-path-list)
     (plist-put file-info :top-dir work-root)
@@ -319,24 +323,33 @@ TOP-DIR に、ローカルのワークディレクトリのトップディレク
   )
 
 
+
+(defvar rb/front-edit-info-keys
+  '(:tool :top-dir :base-dir :id :state :title :description :test :file-list
+	  :unmark-files))
+
 (defvar rb/front-edit-during-to-add-file nil)
 
 (defun rb/front-edit-add-file (file-info)
   (if (not rb/front-edit-during-to-add-file)
       ;; rb/front-edit-during-to-add-file が nil の場合、新規投稿
       (rb/front-edit-view nil file-info)
+    ;; 既存の rrq に追加登録
     (setq rb/front-edit-during-to-add-file nil)
     (with-current-buffer (get-buffer-create rb/front-edit-buf)
-      (let ((info (rb/front-edit-get-info)))
-	(plist-put info :file-list
-		   (append (plist-get info :file-list)
-			   (rb/front-file-info-get-file-list file-info)))
-	(plist-put info :top-dir
-		   (rb/front-file-info-get-top-dir file-info))
-	(plist-put info :base-dir
-		   (rb/front-file-info-get-base-dir file-info))
+      (let ((info (copy-sequence rb/front-edit-info))
+	    (file-list (plist-get rb/front-edit-info :file-list))
+	    )
+
+	;; 被ってないファイルを追加する
+	(dolist (file (rb/front-file-info-get-file-list file-info))
+	  (when (not (member file file-list))
+	    (add-to-list 'file-list file t)))
+	(plist-put info :file-list file-list)
+	(plist-put info :top-dir (rb/front-file-info-get-top-dir file-info))
+	(plist-put info :base-dir (rb/front-file-info-get-base-dir file-info))
 	(rb/front-edit-redraw info)
-	(when (not (eq (plist-get info :state) "new"))
+	(when (not (eq (plist-get rb/front-edit-info :state) "new"))
 	  (rb/front-edit-update-diff-for info rb/front-submit-and-publish-p))
 	))
     (rb/front-switch-to-buffer-other-window rb/front-edit-buf)
@@ -344,24 +357,26 @@ TOP-DIR に、ローカルのワークディレクトリのトップディレク
 
 (defun rb/front-edit-commit ()
   (interactive)
-  (let ((info (rb/front-edit-get-info)))
-    (rb/front-commit-view (plist-get (rb/front-edit-get-info) :id)))
+  (rb/front-edit-apply-info)
+  (rb/front-commit-view rb/front-edit-info)
 )
 
 (defun rb/front-edit-redraw (&optional info)
   (interactive)
-  (when (not info)
-    (setq info (rb/front-edit-get-info)))
   (with-current-buffer (get-buffer-create rb/front-edit-buf)
+    (if info
+	(rb/front-edit-apply-info-2-list info)
+      (rb/front-edit-apply-info))
+    (setq info rb/front-edit-info)
     (let ((inhibit-read-only t)
 	  (id (plist-get info :id))
 	  (modified-p (buffer-modified-p))
 	  (backup-lineno (line-number-at-pos))
+	  (unmarked-list (plist-get info :unmark-files))
 	  reply-hash)
       (erase-buffer)
       (rb/front-insert-key-bind-doc
        '(("submit: " "(C-c C-c)" )
-	 (", update diff: " "(C-c C-u)" )
 	 (", publish: " "(C-c C-p)")
 	 (", cancel: " "(kill-buffer)")
 	 ("\nsave to draft: " "(C-x C-s)" )
@@ -421,11 +436,13 @@ TOP-DIR に、ローカルのワークディレクトリのトップディレク
 
       (rb/front-insert-key-bind-doc
        '(("toggle mark: " "(C-c C-SPC)")
+	 (", update diff: " "(C-c C-u)" )
 	 (", add file: " "(C-c C-a)")
-	 (", commit: " "(C-c C)")
+	 ("\ncommit: " "(C-c C)")
 	 ("\n")))
       (dolist (file (plist-get info :file-list))
-	(rb/front-edit-insert-file-info file t))
+	(rb/front-edit-insert-file-info file
+					(not (member file unmarked-list))))
       (rb/front-insert-readOnlyText "<---\n"
 				    rb/front-face-emphasis)
 
@@ -444,29 +461,32 @@ TOP-DIR に、ローカルのワークディレクトリのトップディレク
 	     "Please hit key 'C-c C-d' to display review comments"
 	     rb/front-face-warning)
 	  (setq reply-hash (rb/front-get-reply-hash id))
-	  
-	  (dolist (review (rb/front-get-review-list id))
-	    (rb/front-insert-readOnlyText-multi
-	     (list (list (format "(%d:%d:" (plist-get review :review-id)
-				 (plist-get review :id) ) rb/front-face-bold)
-		   (if (equal (plist-get review :issue_status) "open")
-		       (list "open" rb/front-face-warning)
-		     (list "close" rb/front-face-bold))
-		   (list (format "):%s:%s\n"
-				 (rb/front-repstr 
-				  (rb/front-access review :links :filediff :title)
-				  " ([^()]+) ->.*" "" t)
-				 (plist-get review :first_line))
-			 rb/front-face-bold)))
-	    (rb/front-insert-readOnlyText (plist-get review :text)
-					  rb/front-face-item "\n")
-	    ;; レスポンス表示
-	    (let ((reply-list (gethash (plist-get review :id) reply-hash)))
-	      (dolist (reply reply-list)
-		(rb/front-insert-readOnlyText
-		 (format "--> %s" (plist-get reply :text))
-		 rb/front-face-message "\n")))
-	    )
+
+	  (if (not (rb/front-get-review-list id))
+	      (rb/front-insert-readOnlyText
+	       "No review comment\n" rb/front-face-warning)
+	    (dolist (review (rb/front-get-review-list id))
+	      (rb/front-insert-readOnlyText-multi
+	       (list (list (format "(%d:%d:" (plist-get review :review-id)
+				   (plist-get review :id) ) rb/front-face-bold)
+		     (if (equal (plist-get review :issue_status) "open")
+			 (list "open" rb/front-face-warning)
+		       (list "close" rb/front-face-bold))
+		     (list (format "):%s:%s\n"
+				   (rb/front-repstr 
+				    (rb/front-access review :links :filediff :title)
+				    " ([^()]+) ->.*" "" t)
+				   (plist-get review :first_line))
+			   rb/front-face-bold)))
+	      (rb/front-insert-readOnlyText (plist-get review :text)
+					    rb/front-face-item "\n")
+	      ;; レスポンス表示
+	      (let ((reply-list (gethash (plist-get review :id) reply-hash)))
+		(dolist (reply reply-list)
+		  (rb/front-insert-readOnlyText
+		   (format "--> %s" (plist-get reply :text))
+		   rb/front-face-message "\n")))
+	      ))
 	  (rb/front-insert-readOnlyText "<---"
 					rb/front-face-emphasis "\n"))
 	)
@@ -481,10 +501,15 @@ TOP-DIR に、ローカルのワークディレクトリのトップディレク
 (defvar rb/front-edit-mode-hook nil
   "Hooks called when rb/front-edit mode fires up.")
 
+(defvar rb/front-edit-info nil)
+
 (define-derived-mode rb/front-edit-mode
   text-mode "rb/front-edit"
   "Major mode for Review Board.
           \\{rb/front-edit-mode-map}"
+
+  (when (not (boundp 'rb/front-edit-info))
+    (set (make-local-variable 'rb/front-edit-info) nil))
   )
 
 (define-key rb/front-edit-mode-map (kbd "C-c C-a") 'rb/front-edit-add-file-to)
@@ -513,6 +538,7 @@ file-info は rb/front-file-info-create で生成する。
 	 info tool base-dir file-list rrq)
     (with-current-buffer buf
       (rb/front-edit-mode)
+      (setq rb/front-edit-info (copy-sequence '(:dummy nil :unmark-files (nil))))
       (if id
 	  (progn
 	    (setq rrq (rb/front-get-request id))
@@ -521,7 +547,8 @@ file-info は rb/front-file-info-create で生成する。
 	;; 規新登録の場合
 	(setq tool (rb/front-file-info-get-tool file-info)
 	      base-dir (rb/front-file-info-get-base-dir file-info)
-	      info (list :tool tool :state "new"
+	      info (list :tool tool
+			 :state "new"
 			 :top-dir (rb/front-file-info-get-top-dir file-info)
 			 :base-dir base-dir
 			 :file-list (rb/front-file-info-get-file-list file-info))
@@ -530,7 +557,7 @@ file-info は rb/front-file-info-create で生成する。
 	)
       (when base-dir
 	(rb/front-set-default-dir base-dir))
-      
+
       (rb/front-edit-redraw info)
       )
     (switch-to-buffer buf)
@@ -573,15 +600,21 @@ file-info は rb/front-file-info-create で生成する。
 
 (defun rb/front-edit-add-file-to ()
   (interactive)
-  (rb/front-edit-check-submit)
   (setq rb/front-edit-during-to-add-file t)
-  (let* ((info (rb/front-edit-get-info))
+  (let* ((info rb/front-edit-info)
 	 (tool (plist-get info :tool))
 	 (work-dir (rb/front-get-work-dir (plist-get info :id)))
+	 (id (plist-get info :id))
+	 (top-dir (plist-get rb/front-edit-info :top-dir))
 	 )
+
+    (when id
+      (rb/front-setting-set-work-info
+       id (list :tool tool :id id :base-dir work-dir :top-dir top-dir)))
+    
     (setq rb/front-prev-basedir work-dir)
     (rb/front-tool-get-setup-to-add-files tool work-dir)
-    ))
+  ))
 
 
 (defun rb/front-edit-get-text-region (pattern)
@@ -611,6 +644,17 @@ file-info は rb/front-file-info-create で生成する。
 (defun rb/front-edit-get-text-line (pattern)
   (re-search-forward pattern)
   (buffer-substring-no-properties (point) (point-at-eol))
+  )
+
+(defun rb/front-edit-apply-info-2-list (info &optional key-list)
+  (dolist (key (or key-list rb/front-edit-info-keys))
+    (when (plist-get info key)
+      (plist-put rb/front-edit-info key (plist-get info key)))))
+    
+
+(defun rb/front-edit-apply-info ()
+  (rb/front-edit-apply-info-2-list (rb/front-edit-get-info)
+				   '(:title :description :test))
   )
 
 (defun rb/front-edit-get-info ()
@@ -657,16 +701,25 @@ file-info は rb/front-file-info-create で生成する。
   (interactive)
   (let ((inhibit-read-only t)
 	(pos (point))
-	(modified-p (buffer-modified-p)))
+	(modified-p (buffer-modified-p))
+	(unmarked-list (plist-get rb/front-edit-info :unmark-files))
+	)
     (save-excursion
       (beginning-of-line)
       (when (looking-at "^ \\[\\([ X]\\)\\]: \\(.*\\)$")
-	(let ((mark (match-string 1))
-	      (path (match-string 2)))
+	(let ((mark (match-string-no-properties 1))
+	      (path (match-string-no-properties 2)))
 	  (delete-region (point-at-bol) (1+ (point-at-eol)))
 	  (rb/front-edit-insert-file-info path (not (equal mark "X")))
+	  (if (equal mark "X")
+	      ;; アンマークリストに追加
+	      (add-to-list 'unmarked-list path t)
+	    ;; アンマークリストから除外
+	    (setq unmarked-list (delete path unmarked-list))
+	    )
 	  ))
       )
+    (plist-put rb/front-edit-info :unmark-files unmarked-list)
     (set-buffer-modified-p modified-p)
     (goto-char pos)
     ))
@@ -690,7 +743,7 @@ file-info は rb/front-file-info-create で生成する。
 
 (defun rb/front-edit-set-reply ()
   (interactive)
-  (let* ((info (rb/front-edit-get-info))
+  (let* ((info rb/front-edit-info)
 	 (id (plist-get info :id))
 	 (review-info (rb/front-edit-get-current-review))
 	 (reply-hash (rb/front-get-reply-hash (plist-get info :id)))
@@ -723,16 +776,18 @@ file-info は rb/front-file-info-create で生成する。
 (defun rb/front-edit-toggle-display-review ()
   (interactive)
   (setq rb/front-display-comment-p (not rb/front-display-comment-p))
-  (rb/front-edit-redraw (rb/front-edit-get-info)))
+  ;;(rb/front-edit-redraw (rb/front-edit-get-info)))
+  (rb/front-edit-redraw))
 
 (defun rb/front-edit-toggle-publish-mode ()
   (interactive)
   (setq rb/front-submit-and-publish-p (not rb/front-submit-and-publish-p))
-  (rb/front-edit-redraw (rb/front-edit-get-info)))
+;;  (rb/front-edit-redraw (rb/front-edit-get-info)))
+  (rb/front-edit-redraw))
 
 (defun rb/front-edit-discard-draft ()
   (interactive)
-  (let ((info (rb/front-edit-get-info)))
+  (let ((info rb/front-edit-info))
     (rb/front-draft-discard (plist-get info :id))
     (kill-buffer rb/front-edit-buf)
     (rb/front-list-redraw-view)
@@ -750,11 +805,14 @@ file-info は rb/front-file-info-create で生成する。
   (interactive)
   ;; publish せずに submit する。
   (let ((rb/front-submit-and-publish-p nil))
-    (rb/front-edit-submit t)))
+    (rb/front-edit-submit t))
+  (rb/front-edit-redraw)
+  )
 
 (defun rb/front-edit-submit (&optional no-interactive)
   (interactive)
-  (let* ((info (rb/front-edit-get-info))
+  (rb/front-edit-apply-info)
+  (let* ((info rb/front-edit-info)
 	 (id (plist-get info :id)))
     (when (and id (plist-get info :modified-file-list-p))
       ;; 既存 rrq の submit で、ファイルリストが編集されている場合
@@ -768,48 +826,46 @@ file-info は rb/front-file-info-create で生成する。
 	(rb/front-edit-submit-direct rb/front-submit-and-publish-p)
 	(when (not no-interactive)
 	  (kill-buffer)
-	(rb/front-list-redraw-view)
-	)))
+	  (rb/front-list-redraw-view)
+	  )))
     ))
-
-(defun rb/front-edit-check-submit ()
-  (when (buffer-modified-p)
-    (when (y-or-n-p "buffer is modified. submit?: " )
-      (rb/front-edit-submit-direct rb/front-submit-and-publish-p))))
-
 
 (defun rb/front-edit-submit-direct (publish-p)
   "現在の edit buffer の 情報を submit する。
 
 publish-p が nil 以外の場合 publish する。
 "
-  (let ((info (rb/front-edit-get-info))
+  (rb/front-edit-apply-info)
+  (let ((info rb/front-edit-info)
 	id)
     (setq id (rb/front-register-rrq (plist-get info :id)
 				    (plist-get info :title)
 				    (plist-get info :description)
 				    (plist-get info :test)))
-    (if (and id
-	     (equal (plist-get info :state) "new"))
-	;; new の場合、file-list も登録する。
-	(rb/front-exec-rbt id default-directory
-			   (rb/front-normalize-file-list id
-							 (plist-get info :tool)
-							 default-directory
-							 (plist-get info :file-list))
-			   (lambda (success)
-			     (when (and success publish-p)
-			       (rb/front-draft-publish id))))
-      (when publish-p
-	(rb/front-draft-publish id))
+    (when id
+      (plist-put rb/front-edit-info :id id)
+      (if (equal (plist-get info :state) "new")
+	  ;; new の場合、file-list も登録する。
+	  (rb/front-exec-rbt id default-directory
+			     (rb/front-normalize-file-list id
+							   (plist-get info :tool)
+							   default-directory
+							   (plist-get info :file-list)
+							   (plist-get info :unmark-files)
+							   )
+			     (lambda (success)
+			       (when (and success publish-p)
+				 (rb/front-draft-publish id))))
+	;; 登録済みの場合、 publish する
+	(when publish-p
+	  (rb/front-draft-publish id)))
       ))
   (set-buffer-modified-p nil)
   )
 
 (defun rb/front-edit-update-diff ()
   (interactive)
-  (rb/front-edit-check-submit)
-  (rb/front-edit-update-diff-for (rb/front-edit-get-info)
+  (rb/front-edit-update-diff-for rb/front-edit-info
 				 rb/front-submit-and-publish-p)
   )
 
@@ -826,7 +882,8 @@ publish-p が nil 以外の場合 publish する。
       (rb/front-exec-rbt id top-dir
 			 (rb/front-normalize-file-list id
 						       (plist-get info :tool)
-						       top-dir file-list)
+						       top-dir file-list
+						       (plist-get info :unmark-files))
 			 (lambda (success)
 			   (when (and success
 				      publish-p
@@ -891,10 +948,10 @@ publish-p が nil 以外の場合 publish する。
   )))
 
 
-(defun rb/front-commit-view (id)
+(defun rb/front-commit-view (edit-info)
   "file-info のコミットメッセージを編集するバッファを表示。
 "
-  (let* ((edit-info (rb/front-edit-get-info-at id))
+  (let* ((id (plist-get edit-info :id))
 	 (tool (plist-get edit-info :tool))
 	 work-dir file-list conv-info)
     (setq work-dir (rb/front-get-work-dir id))
@@ -903,7 +960,9 @@ publish-p が nil 以外の場合 publish する。
     (setq file-list (rb/front-normalize-file-list id
 						  tool
 						  (plist-get conv-info :root-path)
-						  (plist-get edit-info :file-list)))
+						  (plist-get edit-info :file-list)
+						  (plist-get edit-info :unmark-files)
+						  ))
     (rb/front-text-view
      (lambda ()
        (rb/front-set-default-dir (plist-get conv-info :root-path))
@@ -925,7 +984,8 @@ publish-p が nil 以外の場合 publish する。
        (plist-put rb/front-text-info :edit-info edit-info)
        )
      (lambda ()
-       (insert (format "%sr/%d/\n" rb/front-rb-url id))
+       (when id
+	 (insert (format "%sr/%d/\n" rb/front-rb-url id)))
        (insert (plist-get edit-info :description))
        )
      'rb/front-commit-submit
