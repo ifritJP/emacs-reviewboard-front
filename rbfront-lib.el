@@ -424,11 +424,18 @@ id: rrq の ID。 新規登録の場合 nil を指定。
 				   :draft_files
 				 :files)
 			       :href))
-    (when url 
-      (mapcar (lambda (X)
-		(plist-get X :source_file))
-	      (rb/front-access-web url nil nil :files)
-	      ))
+    (when url
+      (let ((next url)
+	    resp file-list )
+	(while next
+	  (setq resp (rb/front-access-web next nil nil))
+	  (setq file-list (append file-list
+				  (mapcar (lambda (X)
+					    (plist-get X :source_file))
+					  (rb/front-access resp :files))))
+	  (setq next (rb/front-access resp :links :next :href)))
+	file-list
+	))
     ))
 
 
