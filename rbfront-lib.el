@@ -518,22 +518,31 @@ hash (返信元の コメント id → reply コメント) を取得する。
 `(:name name :fullname fullname) のリストを返す。
 "
   (when (or force (not rb/front-rbt-cache-reviewer-candidate-list))
-    (setq rb/front-rbt-cache-reviewer-candidate-list
-	  (append
-	   (mapcar (lambda (X)
-		     (propertize (format "%s(%s)"
-					 (plist-get X :username)
-					 (plist-get X :fullname))
-				 :name (plist-get X :username)
-				 :fullname (plist-get X :fullname)
-				 :kind 'user))
-		   (rb/front-access-web "/api/users/?max-results=200" nil nil :users))
-	   (mapcar (lambda (X)
-		     (propertize (plist-get X :name)
-				 :name (plist-get X :name)
-				 :fullname (plist-get X :display_name)
-				 :kind 'group))
-		   (rb/front-access-web "/api/groups/" nil nil :groups)))))
+    (let ((next-url (concat rb/front-rb-url "/api/users/?max-results=200"))
+	  resp
+	  user-info )
+      ;; 全ユーザ情報を取得する
+      (while next-url
+	(setq resp (rb/front-access-web (substring next-url (length rb/front-rb-url))))
+	(setq next-url (plist-get (plist-get (plist-get resp :links) :next) :href))
+	(setq user-info (append user-info (plist-get resp :users))))
+      ;; 全ユーザ情報から所定の情報をピックアップ + group 情報取得
+      (setq rb/front-rbt-cache-reviewer-candidate-list
+	    (append
+	     (mapcar (lambda (X)
+		       (propertize (format "%s(%s)"
+					   (plist-get X :username)
+					   (plist-get X :fullname))
+				   :name (plist-get X :username)
+				   :fullname (plist-get X :fullname)
+				   :kind 'user))
+		     user-info)
+	     (mapcar (lambda (X)
+		       (propertize (plist-get X :name)
+				   :name (plist-get X :name)
+				   :fullname (plist-get X :display_name)
+				   :kind 'group))
+		     (rb/front-access-web "/api/groups/" nil nil :groups))))))
   rb/front-rbt-cache-reviewer-candidate-list
   )
 
